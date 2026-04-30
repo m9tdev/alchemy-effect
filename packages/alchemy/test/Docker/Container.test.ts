@@ -57,4 +57,92 @@ describe.skipIf(!dockerDaemonOk)("Docker.Container", () => {
       expect(Result.isFailure(probe)).toBe(true);
     }).pipe(Effect.provide(Docker.providers())),
   );
+
+  test(
+    "changing restart policy updates in place",
+    { providers: false, timeout: 120_000 },
+    Effect.gen(function* () {
+      yield* destroy();
+
+      const before = yield* test.deploy(
+        Effect.gen(function* () {
+          const network = yield* Docker.Network("net", {});
+          const image = yield* Docker.Image("alpine", {
+            image: "alpine:3.20",
+          });
+          const container = yield* Docker.Container("c", {
+            image,
+            network,
+            command: ["sleep", "60"],
+            restart: "no",
+          });
+          return container;
+        }),
+      );
+
+      const after = yield* test.deploy(
+        Effect.gen(function* () {
+          const network = yield* Docker.Network("net", {});
+          const image = yield* Docker.Image("alpine", {
+            image: "alpine:3.20",
+          });
+          const container = yield* Docker.Container("c", {
+            image,
+            network,
+            command: ["sleep", "60"],
+            restart: "always",
+          });
+          return container;
+        }),
+      );
+
+      expect(after.containerId).toBe(before.containerId);
+
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
+
+  test(
+    "changing env triggers replace",
+    { providers: false, timeout: 120_000 },
+    Effect.gen(function* () {
+      yield* destroy();
+
+      const before = yield* test.deploy(
+        Effect.gen(function* () {
+          const network = yield* Docker.Network("net", {});
+          const image = yield* Docker.Image("alpine", {
+            image: "alpine:3.20",
+          });
+          const container = yield* Docker.Container("c", {
+            image,
+            network,
+            env: { FOO: "bar" },
+            command: ["sleep", "60"],
+          });
+          return container;
+        }),
+      );
+
+      const after = yield* test.deploy(
+        Effect.gen(function* () {
+          const network = yield* Docker.Network("net", {});
+          const image = yield* Docker.Image("alpine", {
+            image: "alpine:3.20",
+          });
+          const container = yield* Docker.Container("c", {
+            image,
+            network,
+            env: { FOO: "baz" },
+            command: ["sleep", "60"],
+          });
+          return container;
+        }),
+      );
+
+      expect(after.containerId).not.toBe(before.containerId);
+
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
 });
