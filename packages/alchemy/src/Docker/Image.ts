@@ -108,7 +108,8 @@ const computeRepository = (id: string, props: ImageBuildProps) =>
     return yield* createPhysicalName({ id, maxLength: 60, lowercase: true });
   });
 
-const NO_SUCH_IMAGE = /no such image|image is being used|image not known/i;
+const NO_SUCH_IMAGE =
+  /no such image|image is being used|image not known|unrecognized image (id|name)/i;
 
 const bundleAppImage = Effect.fnUntraced(function* ({
   id,

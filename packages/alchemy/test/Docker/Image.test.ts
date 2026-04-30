@@ -152,4 +152,34 @@ describe.skipIf(!dockerDaemonOk)("Docker.Image (mode A — build)", () => {
       expect(Result.isFailure(probe)).toBe(true);
     }).pipe(Effect.provide(Docker.providers())),
   );
+
+  test(
+    "redeploying with unchanged source returns same imageRef",
+    { providers: false, timeout: 180_000 },
+    Effect.gen(function* () {
+      yield* destroy();
+
+      const a = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Image("app-image", {
+            main: "packages/alchemy/test/Docker/fixtures/server.ts",
+            runtime: "bun",
+          });
+        }),
+      );
+      const b = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Image("app-image", {
+            main: "packages/alchemy/test/Docker/fixtures/server.ts",
+            runtime: "bun",
+          });
+        }),
+      );
+
+      expect(b.imageRef).toBe(a.imageRef);
+      expect(b.imageId).toBe(a.imageId);
+
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
 });
