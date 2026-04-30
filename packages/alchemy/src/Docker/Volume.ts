@@ -12,9 +12,24 @@ import type { Providers } from "./Providers.ts";
 import { assertAlchemyOwned, isStderrMatch, recordKey } from "./util.ts";
 
 export interface VolumeProps {
+  /**
+   * Explicit Docker volume name.
+   * @default a deterministic per-stack name derived from the app, stage, and logical id
+   */
   readonly name?: string;
+  /**
+   * Docker volume driver.
+   * @default "local"
+   */
   readonly driver?: string;
+  /**
+   * Driver-specific options passed via `--opt key=value` to `docker volume create`.
+   * Immutable after creation; changes trigger replacement.
+   */
   readonly driverOpts?: Record<string, Input<string>>;
+  /**
+   * Extra labels merged with the internal alchemy ownership labels.
+   */
   readonly labels?: Record<string, Input<string>>;
 }
 
@@ -31,6 +46,26 @@ export interface Volume extends Resource<
   Providers
 > {}
 
+/**
+ * A named Docker volume for persistent container storage.
+ *
+ * Volumes outlive the containers that mount them — destroy the stack to remove
+ * the volume. For ephemeral storage prefer a tmpfs mount instead.
+ *
+ * @section Creating a Volume
+ * @example Default local volume
+ * ```typescript
+ * const data = yield* Docker.Volume("data", {});
+ * ```
+ *
+ * @example Volume with explicit driver options
+ * ```typescript
+ * const data = yield* Docker.Volume("data", {
+ *   driver: "local",
+ *   driverOpts: { type: "tmpfs", device: "tmpfs" },
+ * });
+ * ```
+ */
 export const Volume = Resource<Volume>("Docker.Volume");
 
 const computeName = (id: string, props: VolumeProps) =>

@@ -20,24 +20,71 @@ import type { Providers } from "./Providers.ts";
 import { isStderrMatch } from "./util.ts";
 
 export type ImageBuildProps = {
+  /**
+   * Path to the entrypoint TypeScript/JavaScript file (relative to cwd).
+   */
   readonly main: string;
+  /**
+   * Bundle runtime used inside the image.
+   * @default "bun"
+   */
   readonly runtime?: "bun" | "node";
+  /**
+   * Packages installed in the image at build time (kept out of the bundle).
+   */
   readonly external?: ReadonlyArray<string>;
+  /**
+   * Whether to emit a `RUN bun add` (or equivalent) step for each entry in `external`.
+   * @default true
+   */
   readonly autoInstallExternals?: boolean;
+  /**
+   * Custom base Dockerfile snippet to use instead of the default runtime base image.
+   */
   readonly dockerfile?: string;
+  /**
+   * `--platform` flag passed to `docker build` (e.g. `"linux/amd64"`).
+   */
   readonly platform?: string;
+  /**
+   * Image repository name.
+   * @default a deterministic per-stack name derived from the app, stage, and logical id
+   */
   readonly repository?: string;
+  /**
+   * Explicit image tag.
+   * @default a content-addressable hash of the bundle and Dockerfile
+   */
   readonly tag?: string;
+  /**
+   * `--build-arg` entries forwarded to `docker build`.
+   */
   readonly buildArgs?: Record<string, Input<string>>;
+  /**
+   * If set, the built image is tagged for and pushed to this registry.
+   */
   readonly registry?: {
+    /** Registry server URL (e.g. `"ghcr.io"`). */
     readonly url: Input<string>;
+    /** Username for `docker login`. Required when `registry` is set. */
     readonly username?: Input<string>;
+    /** Password/token for `docker login`. Required when `registry` is set. */
     readonly password?: Input<string>;
   };
 };
 
 export type ImageReferenceProps = {
+  /**
+   * Full image reference, including tag or digest (e.g. `"postgres:16-alpine"`).
+   */
   readonly image: string;
+  /**
+   * When to pull the image from the registry.
+   * - `"always"` — pull on every diff (honors moving tags like `:latest`)
+   * - `"missing"` — pull only if not present locally
+   * - `"never"` — fail if not present locally
+   * @default "missing"
+   */
   readonly pull?: "always" | "missing" | "never";
 };
 
@@ -62,6 +109,49 @@ export interface Image extends Resource<
   Providers
 > {}
 
+/**
+ * A Docker image — either built from a local TypeScript entrypoint (Mode A)
+ * or referenced from a registry (Mode B).
+ *
+ * Mode A bundles your source via Rolldown, synthesizes a Dockerfile, and
+ * builds with a content-addressable tag. Mode B pulls (or assumes) a
+ * pre-existing image, suitable for stock services like databases.
+ *
+ * @section Building from Source
+ * @example Build a Bun-based app image
+ * ```typescript
+ * const app = yield* Docker.Image("app", {
+ *   main: "src/index.ts",
+ *   runtime: "bun",
+ * });
+ * ```
+ *
+ * @example Build with externals and a custom base
+ * ```typescript
+ * const app = yield* Docker.Image("app", {
+ *   main: "src/index.ts",
+ *   runtime: "node",
+ *   external: ["sharp"],
+ *   dockerfile: "FROM node:22-slim",
+ * });
+ * ```
+ *
+ * @section Referencing an Existing Image
+ * @example Pull a stock image
+ * ```typescript
+ * const pg = yield* Docker.Image("pg", {
+ *   image: "postgres:16-alpine",
+ * });
+ * ```
+ *
+ * @example Refresh a moving tag on every deploy
+ * ```typescript
+ * const latest = yield* Docker.Image("api", {
+ *   image: "ghcr.io/me/api:latest",
+ *   pull: "always",
+ * });
+ * ```
+ */
 export const Image = Resource<Image>("Docker.Image");
 
 const ensureReference = Effect.fn(function* (props: ImageReferenceProps) {
