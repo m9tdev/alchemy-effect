@@ -136,6 +136,12 @@
       "worker": "./src/Cloudflare/*/index.ts",
       "import": "./lib/Cloudflare/*/index.js"
     },
+    "./Docker": {
+      "types": "./src/Docker/index.ts",
+      "bun": "./src/Docker/index.ts",
+      "worker": "./src/Docker/index.ts",
+      "import": "./lib/Docker/index.js"
+    },
     "./Axiom": {
       "types": "./src/Axiom/index.ts",
       "bun": "./src/Axiom/index.ts",
