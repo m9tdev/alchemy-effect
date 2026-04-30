@@ -64,16 +64,21 @@ describe.skipIf(!dockerDaemonOk)("Docker.Network", () => {
   );
 
   test(
-    "changing driver triggers replace",
+    "changing labels triggers replace",
     { providers: false },
     Effect.gen(function* () {
       yield* destroy();
       const a = yield* test.deploy(
         Effect.gen(function* () {
-          return yield* Docker.Network("net", { driver: "bridge" });
+          return yield* Docker.Network("net", { labels: { v: "1" } });
         }),
       );
-      expect(a.driver).toBe("bridge");
+      const b = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Network("net", { labels: { v: "2" } });
+        }),
+      );
+      expect(b.networkId).not.toBe(a.networkId);
       yield* destroy();
     }).pipe(Effect.provide(Docker.providers())),
   );
