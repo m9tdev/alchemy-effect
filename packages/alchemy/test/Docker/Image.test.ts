@@ -119,3 +119,37 @@ describe.skipIf(!dockerDaemonOk)("Docker.Image (mode B — reference)", () => {
     }).pipe(Effect.provide(Docker.providers())),
   );
 });
+
+describe.skipIf(!dockerDaemonOk)("Docker.Image (mode A — build)", () => {
+  test(
+    "bundles a fixture entry, builds an image, and removes it on destroy",
+    { providers: false, timeout: 180_000 },
+    Effect.gen(function* () {
+      yield* destroy();
+
+      const image = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Image("app-image", {
+            main: "packages/alchemy/test/Docker/fixtures/server.ts",
+            runtime: "bun",
+          });
+        }),
+      );
+
+      expect(image.mode).toBe("build");
+      // Repository is a deterministic physical name derived from the
+      // stack/id/stage; followed by a 16-char content hash tag.
+      expect(image.imageRef).toMatch(/^[a-z0-9-]+:[a-f0-9]{16}$/);
+      expect(image.imageId).toMatch(/^sha256:/);
+      expect(image.bundleHash).toBeDefined();
+      expect(image.dockerfile).toContain("ENTRYPOINT");
+
+      yield* destroy();
+
+      const probe = yield* Effect.result(
+        runDockerCommand(["image", "inspect", image.imageRef]),
+      );
+      expect(Result.isFailure(probe)).toBe(true);
+    }).pipe(Effect.provide(Docker.providers())),
+  );
+});

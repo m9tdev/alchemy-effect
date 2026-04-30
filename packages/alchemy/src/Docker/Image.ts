@@ -1,11 +1,24 @@
 import * as Effect from "effect/Effect";
-import { runDockerCommand } from "../Bundle/Docker.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as crypto from "node:crypto";
+import * as Bundle from "../Bundle/Bundle.ts";
+import {
+  buildAppDockerfile,
+  dockerBuild,
+  dockerLogin,
+  materializeDockerfile,
+  pushImage,
+  runDockerCommand,
+  writeContextFiles,
+} from "../Bundle/Docker.ts";
 import { isResolved } from "../Diff.ts";
 import type { Input } from "../Input.ts";
+import { createPhysicalName } from "../PhysicalName.ts";
 import * as Provider from "../Provider.ts";
 import { Resource } from "../Resource.ts";
 import { inspect, type InspectedImage } from "./Inspect.ts";
 import type { Providers } from "./Providers.ts";
+import { isStderrMatch } from "./util.ts";
 
 export type ImageBuildProps = {
   readonly main: string;
@@ -89,6 +102,135 @@ const ensureReference = Effect.fn(function* (props: ImageReferenceProps) {
   };
 });
 
+const computeRepository = (id: string, props: ImageBuildProps) =>
+  Effect.gen(function* () {
+    if (props.repository) return props.repository;
+    return yield* createPhysicalName({ id, maxLength: 60, lowercase: true });
+  });
+
+const NO_SUCH_IMAGE = /no such image|image is being used|image not known/i;
+
+const bundleAppImage = Effect.fnUntraced(function* ({
+  id,
+  props,
+}: {
+  id: string;
+  props: ImageBuildProps;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+
+  const runtime = props.runtime ?? "bun";
+  const repository = yield* computeRepository(id, props);
+
+  // 1. Bundle entrypoint via the shared Rolldown helper.
+  const bundleOutput = yield* Bundle.build(
+    {
+      input: props.main,
+      cwd: process.cwd(),
+      external: [...(props.external ?? [])],
+      platform: "node",
+      resolve: {
+        conditionNames:
+          runtime === "bun"
+            ? ["bun", "import", "module", "default"]
+            : ["node", "import", "module", "default"],
+      },
+      treeshake: true,
+    },
+    {
+      format: "esm",
+      sourcemap: false,
+      minify: true,
+      entryFileNames: "index.mjs",
+    },
+  );
+
+  // 2. Build the Dockerfile content from shared helper.
+  const dockerfile = buildAppDockerfile({
+    runtime,
+    external: props.external ?? [],
+    autoInstallExternals: props.autoInstallExternals ?? true,
+    base: props.dockerfile,
+    entryFile: "index.mjs",
+  });
+
+  // 3. Compute content-addressable tag.
+  const tag =
+    props.tag ??
+    (yield* Effect.sync(() =>
+      crypto
+        .createHash("sha256")
+        .update(bundleOutput.hash)
+        .update(dockerfile)
+        .digest("hex")
+        .slice(0, 16),
+    ));
+
+  const imageRef = `${repository}:${tag}`;
+
+  // 4. Materialize context dir.
+  const root = yield* fs.makeTempDirectory({
+    prefix: `alchemy-docker-${id}-`,
+  });
+
+  const buildAndInspect = Effect.gen(function* () {
+    yield* materializeDockerfile(dockerfile, root);
+    yield* writeContextFiles(
+      root,
+      bundleOutput.files.map((f) => ({
+        path: f.path,
+        content:
+          typeof f.content === "string"
+            ? new TextEncoder().encode(f.content)
+            : f.content,
+      })),
+    );
+
+    // 5. docker build
+    yield* dockerBuild({
+      tag: imageRef,
+      context: root,
+      platform: props.platform,
+      buildArgs: props.buildArgs as Record<string, string> | undefined,
+    });
+
+    // 6. Optional registry push.
+    if (props.registry) {
+      yield* dockerLogin({
+        username: (props.registry.username ?? "") as string,
+        password: (props.registry.password ?? "") as string,
+        server: props.registry.url as string,
+      });
+      const pushed = `${props.registry.url}/${imageRef}`;
+      yield* runDockerCommand(["tag", imageRef, pushed]);
+      yield* pushImage(pushed);
+    }
+
+    // 7. Inspect for image id.
+    const inspected = yield* inspect<{ Id: string }>("image", imageRef);
+    if (!inspected) {
+      return yield* Effect.fail(
+        new Error(`Docker.Image: image ${imageRef} not found after build`),
+      );
+    }
+    return inspected;
+  });
+
+  const inspected = yield* buildAndInspect.pipe(
+    Effect.ensuring(
+      fs.remove(root, { recursive: true }).pipe(Effect.catch(() => Effect.void)),
+    ),
+  );
+
+  return {
+    mode: "build" as const,
+    imageRef,
+    imageId: inspected.Id,
+    bundleHash: bundleOutput.hash,
+    dockerfile,
+  };
+});
+
 export const ImageProvider = () =>
   Provider.effect(
     Image,
@@ -121,10 +263,25 @@ export const ImageProvider = () =>
             return undefined;
           }
 
-          // Both build: Phase 5 will fill in real diff logic.
+          // Both build: replace on repository change, replace on explicit
+          // tag change, otherwise rely on the engine's input-prop change
+          // detection. Source-content changes are picked up via prop edits
+          // (e.g. updating `tag` or `external`); the content-addressable
+          // imageRef means a re-bundle with unchanged source is a no-op at
+          // the docker layer.
+          if (isBuildProps(news) && isBuildProps(olds)) {
+            if ((news.repository ?? "") !== (olds.repository ?? "")) {
+              return { action: "replace" } as const;
+            }
+            if ((news.tag ?? "") !== (olds.tag ?? "")) {
+              return { action: "replace" } as const;
+            }
+            return undefined;
+          }
+
           return undefined;
         }),
-        create: Effect.fn(function* ({ news }) {
+        create: Effect.fn(function* ({ id, news }) {
           if (!news) {
             return yield* Effect.fail(
               new Error("Docker.Image: missing required props"),
@@ -133,11 +290,9 @@ export const ImageProvider = () =>
           if (isReferenceProps(news)) {
             return yield* ensureReference(news);
           }
-          return yield* Effect.fail(
-            new Error("Docker.Image: Mode A (build) not yet implemented"),
-          );
+          return yield* bundleAppImage({ id, props: news });
         }),
-        update: Effect.fn(function* ({ news }) {
+        update: Effect.fn(function* ({ id, news, output }) {
           if (!news) {
             return yield* Effect.fail(
               new Error("Docker.Image: update called with undefined news"),
@@ -146,18 +301,25 @@ export const ImageProvider = () =>
           if (isReferenceProps(news)) {
             return yield* ensureReference(news);
           }
-          // Mode A update — Phase 5 fills in.
-          return yield* Effect.fail(
-            new Error(
-              "Docker.Image: build mode (Mode A) update not yet implemented",
-            ),
-          );
+          // Mode A update: re-run the bundle/build pipeline. If the source
+          // and dockerfile are unchanged, the computed imageRef matches the
+          // existing one, docker reuses cached layers, and the result is a
+          // structural no-op (same imageRef, same imageId).
+          return yield* bundleAppImage({ id, props: news });
         }),
-        delete: Effect.fn(function* () {
-          // Mode B: pulled reference images are shared with the rest of the
-          // daemon and not owned by alchemy, so delete is a no-op. Mode A
-          // (build) will own and clean up its own tags in Phase 5.
-          return;
+        delete: Effect.fn(function* ({ olds, output }) {
+          // Mode A only: remove the image we built. Mode B: pulled reference
+          // images are shared with the rest of the daemon and not owned by
+          // alchemy, so delete is a no-op.
+          if (olds && isBuildProps(olds)) {
+            yield* runDockerCommand(["image", "rm", output.imageRef]).pipe(
+              Effect.catchTag("DockerCommandError", (e) =>
+                isStderrMatch(e, NO_SUCH_IMAGE)
+                  ? Effect.void
+                  : Effect.fail(e),
+              ),
+            );
+          }
         }),
       };
     }),
