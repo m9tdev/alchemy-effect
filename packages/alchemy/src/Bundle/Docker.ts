@@ -256,6 +256,12 @@ export const buildAppDockerfile = (
     "WORKDIR /app",
     ...(installStep ? [installStep, ""] : []),
     `COPY ${entryFile} /app/${entryFile}`,
+    // Copy any additional rolldown chunks (`chunk-XXX.js`,
+    // `BunServices-YYY.js`, …). The glob matches zero or more files;
+    // non-trivial bundles always emit at least one chunk, minimal
+    // bundles emit none and the COPY no-ops. Dropping these chunks
+    // produces a `Cannot find module './chunk-XXX.js'` runtime crash
+    // inside the container with zero stdout.
     "COPY *.js /app/",
     `ENTRYPOINT ["${runtimeBin}", "/app/${entryFile}"]`,
     "",
