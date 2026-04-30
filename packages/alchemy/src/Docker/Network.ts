@@ -12,10 +12,29 @@ import type { Providers } from "./Providers.ts";
 import { assertAlchemyOwned, isStderrMatch, recordKey } from "./util.ts";
 
 export interface NetworkProps {
+  /**
+   * Explicit Docker network name.
+   * @default a deterministic per-stack name derived from the app, stage, and logical id
+   */
   readonly name?: string;
+  /**
+   * Docker network driver.
+   * @default "bridge"
+   */
   readonly driver?: "bridge" | "host" | "overlay" | "macvlan" | "none";
+  /**
+   * Whether the network is isolated from the host.
+   * @default false
+   */
   readonly internal?: boolean;
+  /**
+   * Whether containers can attach to this network manually.
+   * @default true
+   */
   readonly attachable?: boolean;
+  /**
+   * Extra labels merged with the internal alchemy ownership labels.
+   */
   readonly labels?: Record<string, Input<string>>;
 }
 
@@ -32,6 +51,28 @@ export interface Network extends Resource<
   Providers
 > {}
 
+/**
+ * A user-defined Docker network for inter-container communication.
+ *
+ * Containers attached to the same network can resolve each other by container
+ * name (Docker's built-in DNS). Use one network per logical group of services.
+ *
+ * @section Creating a Network
+ * @example Bridge network
+ * ```typescript
+ * import * as Docker from "alchemy/Docker";
+ *
+ * const net = yield* Docker.Network("net", {});
+ * ```
+ *
+ * @example Internal-only network
+ * ```typescript
+ * const net = yield* Docker.Network("internal", {
+ *   internal: true,
+ *   labels: { tier: "backend" },
+ * });
+ * ```
+ */
 export const Network = Resource<Network>("Docker.Network");
 
 const computeName = (id: string, props: NetworkProps) =>

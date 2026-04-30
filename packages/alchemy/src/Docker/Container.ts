@@ -16,45 +16,117 @@ import { isStderrMatch, recordKey } from "./util.ts";
 import type { Volume } from "./Volume.ts";
 
 export type PortMapping = {
+  /**
+   * Host port to bind to. Omit for a random ephemeral port assigned by Docker.
+   */
   readonly host?: number;
+  /**
+   * Container port to expose.
+   */
   readonly container: number;
+  /**
+   * Wire protocol.
+   * @default "tcp"
+   */
   readonly protocol?: "tcp" | "udp";
 };
 
 export type VolumeMount =
   | {
+      /** Named `Docker.Volume` to mount. */
       readonly source: Input<Volume>;
+      /** Mount path inside the container. */
       readonly target: string;
+      /** Mount read-only. @default false */
       readonly readonly?: boolean;
     }
   | {
+      /** Absolute path on the host to bind-mount. */
       readonly hostPath: string;
+      /** Mount path inside the container. */
       readonly target: string;
+      /** Mount read-only. @default false */
       readonly readonly?: boolean;
     };
 
 export type Healthcheck = {
+  /**
+   * Docker healthcheck command. The first element is a sentinel:
+   * - `["CMD-SHELL", "<shell command>"]` — run via `/bin/sh -c`
+   * - `["CMD", "<bin>", "<arg>", ...]` — exec form
+   * - `["NONE"]` — disable any healthcheck inherited from the image
+   */
   readonly test: ReadonlyArray<string>;
+  /** Interval between checks. */
   readonly interval?: Duration.Duration;
+  /** Per-check timeout. */
   readonly timeout?: Duration.Duration;
+  /** Failure count required to mark the container unhealthy. */
   readonly retries?: number;
+  /** Initial grace period during which failures don't count. */
   readonly startPeriod?: Duration.Duration;
 };
 
 export type ContainerProps = {
+  /**
+   * Docker image to run.
+   */
   readonly image: Input<Image>;
+  /**
+   * Network the container attaches to.
+   */
   readonly network: Input<Network>;
+  /**
+   * Explicit container name.
+   * @default a deterministic per-stack name derived from the app, stage, and logical id
+   */
   readonly name?: string;
+  /**
+   * Host/container port mappings.
+   */
   readonly ports?: ReadonlyArray<PortMapping>;
+  /**
+   * Environment variables passed to the container.
+   */
   readonly env?: Record<string, Input<string>>;
+  /**
+   * Volume mounts (named volumes or host bind mounts).
+   */
   readonly volumes?: ReadonlyArray<VolumeMount>;
+  /**
+   * Overrides the image's default command (CMD).
+   */
   readonly command?: ReadonlyArray<string>;
+  /**
+   * Overrides the image's ENTRYPOINT.
+   */
   readonly entrypoint?: ReadonlyArray<string>;
+  /**
+   * Restart policy. Mutates in place — does not require replacement.
+   * @default "unless-stopped"
+   */
   readonly restart?: "no" | "on-failure" | "always" | "unless-stopped";
+  /**
+   * Docker healthcheck override. Forwarded to `docker run --health-*`.
+   */
   readonly healthcheck?: Healthcheck;
+  /**
+   * Extra labels merged with the internal alchemy ownership labels.
+   */
   readonly labels?: Record<string, Input<string>>;
+  /**
+   * `--user` flag for `docker run`.
+   */
   readonly user?: string;
+  /**
+   * `--workdir` flag for `docker run`.
+   */
   readonly workingDir?: string;
+  /**
+   * Wait for the healthcheck to report `healthy` before considering the create
+   * complete.
+   * @default true if `healthcheck` is set, else false
+   */
   readonly waitForHealthy?: boolean;
 };
 
@@ -75,6 +147,59 @@ export interface Container extends Resource<
   Providers
 > {}
 
+/**
+ * A running Docker container, attached to a `Docker.Network` and optionally
+ * mounting one or more `Docker.Volume`s.
+ *
+ * Containers are created idempotently: a container with the same name and
+ * matching ownership labels is adopted; otherwise it's recreated. Most prop
+ * changes trigger replacement; only `restart` policy mutates in place.
+ *
+ * @section Running a Container
+ * @example Postgres with a named volume
+ * ```typescript
+ * const network = yield* Docker.Network("net", {});
+ * const pgData = yield* Docker.Volume("pg-data", {});
+ * const pgImage = yield* Docker.Image("pg", { image: "postgres:16-alpine" });
+ * const pg = yield* Docker.Container("postgres", {
+ *   image: pgImage,
+ *   network,
+ *   env: { POSTGRES_PASSWORD: "secret", POSTGRES_DB: "app" },
+ *   volumes: [{ source: pgData, target: "/var/lib/postgresql/data" }],
+ * });
+ * ```
+ *
+ * @section Healthchecks
+ * @example Wait for postgres to be ready before continuing
+ * ```typescript
+ * const pg = yield* Docker.Container("postgres", {
+ *   image: pgImage,
+ *   network,
+ *   env: { POSTGRES_PASSWORD: "secret" },
+ *   healthcheck: {
+ *     test: ["CMD-SHELL", "pg_isready -U postgres"],
+ *     interval: Duration.seconds(2),
+ *     timeout: Duration.seconds(2),
+ *     retries: 30,
+ *   },
+ *   waitForHealthy: true,
+ * });
+ * ```
+ *
+ * @section Inter-container Linking
+ * Containers on the same network can address each other by container name —
+ * Docker provides built-in DNS. Pass the dependency's `containerName` (or
+ * a fixed `name` set on the dependency) as an env var.
+ *
+ * @example App container talking to postgres
+ * ```typescript
+ * const app = yield* Docker.Container("app", {
+ *   image: appImage,
+ *   network,
+ *   env: { DATABASE_URL: `postgres://postgres:secret@${pg.containerName}/app` },
+ * });
+ * ```
+ */
 export const Container = Resource<Container>("Docker.Container");
 
 const NO_SUCH_CONTAINER = /no such container/i;
