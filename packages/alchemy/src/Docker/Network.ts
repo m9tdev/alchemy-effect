@@ -5,7 +5,7 @@ import type { Input } from "../Input.ts";
 import { createPhysicalName } from "../PhysicalName.ts";
 import * as Provider from "../Provider.ts";
 import { Resource } from "../Resource.ts";
-import { runDockerCommand } from "../Bundle/Docker.ts";
+import { DockerCommandError, runDockerCommand } from "../Bundle/Docker.ts";
 import { inspect, type InspectedNetwork } from "./Inspect.ts";
 import { dockerLabels } from "./Labels.ts";
 import type { Providers } from "./Providers.ts";
@@ -43,13 +43,20 @@ const computeName = (id: string, props: NetworkProps) =>
     });
   });
 
-const isStderrMatch = (e: unknown, pattern: RegExp): boolean => {
-  const stderr = (e as { stderr?: string }).stderr ?? "";
-  return pattern.test(stderr);
-};
+const isStderrMatch = (e: DockerCommandError, pattern: RegExp): boolean =>
+  pattern.test(e.stderr);
 
 const NO_SUCH_NETWORK = /no such network/i;
 const HAS_ACTIVE_ENDPOINTS = /has active endpoints/i;
+
+/**
+ * Stable-stringify labels so the diff is order-insensitive across deploys.
+ */
+const labelsKey = (l?: Record<string, Input<string>>) =>
+  Object.entries(l ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join(",");
 
 export const NetworkProvider = () =>
   Provider.effect(
@@ -71,10 +78,7 @@ export const NetworkProvider = () =>
           if ((olds.attachable ?? true) !== (news.attachable ?? true)) {
             return { action: "replace" } as const;
           }
-          if (
-            JSON.stringify(olds.labels ?? {}) !==
-            JSON.stringify(news.labels ?? {})
-          ) {
+          if (labelsKey(olds.labels) !== labelsKey(news.labels)) {
             return { action: "replace" } as const;
           }
           return undefined;
@@ -82,16 +86,27 @@ export const NetworkProvider = () =>
         create: Effect.fn(function* ({ id, news = {} }) {
           const name = yield* computeName(id, news);
           const driver = news.driver ?? "bridge";
-          const labels = {
-            ...(yield* dockerLabels(id)),
-            ...(news.labels ?? {}),
-          };
+          const expectedLabels = yield* dockerLabels(id);
 
           // Idempotent create: if a network with this name already exists
           // (e.g. partial state-persistence failure on a previous run),
-          // adopt it rather than failing.
+          // adopt it — but only if it carries our alchemy ownership labels.
+          // Otherwise refuse, so we never silently destroy a user-managed
+          // network on `destroy()`.
           const existing = yield* inspect<InspectedNetwork>("network", name);
           if (existing) {
+            const ours =
+              existing.Labels?.["alchemy.app"] ===
+                expectedLabels["alchemy.app"] &&
+              existing.Labels?.["alchemy.stage"] ===
+                expectedLabels["alchemy.stage"];
+            if (!ours) {
+              return yield* Effect.fail(
+                new Error(
+                  `Docker.Network: network "${name}" already exists but is not owned by this alchemy stack/stage; refusing to adopt`,
+                ),
+              );
+            }
             return {
               networkId: existing.Id,
               networkName: existing.Name,
@@ -99,6 +114,8 @@ export const NetworkProvider = () =>
               scope: existing.Scope,
             };
           }
+
+          const labels = { ...expectedLabels, ...(news.labels ?? {}) };
 
           const args: string[] = ["network", "create", "--driver", driver];
           if (news.internal) args.push("--internal");
@@ -125,22 +142,25 @@ export const NetworkProvider = () =>
             scope: created.Scope,
           };
         }),
-        update: Effect.fn(function* ({ output }) {
-          // All updatable changes trigger a replacement via `diff`. Anything
-          // that reaches here is a no-op from the resource's perspective.
-          return output;
+        update: Effect.fn(function* () {
+          return yield* Effect.die(
+            "Docker.Network has no in-place update path; diff should return replace for any meaningful change",
+          );
         }),
         delete: Effect.fn(function* ({ output }) {
           yield* runDockerCommand(["network", "rm", output.networkId]).pipe(
             // Retry while attached endpoints are still draining.
+            // 30-second wall-clock cap.
             Effect.retry({
-              while: (e) => isStderrMatch(e, HAS_ACTIVE_ENDPOINTS),
-              schedule: Schedule.exponential(100).pipe(
-                Schedule.both(Schedule.recurs(30)),
+              while: (e) =>
+                e._tag === "DockerCommandError" &&
+                isStderrMatch(e, HAS_ACTIVE_ENDPOINTS),
+              schedule: Schedule.exponential("100 millis").pipe(
+                Schedule.both(Schedule.during("30 seconds")),
               ),
             }),
             // Treat "no such network" as already-deleted (idempotent).
-            Effect.catch((e) =>
+            Effect.catchTag("DockerCommandError", (e) =>
               isStderrMatch(e, NO_SUCH_NETWORK)
                 ? Effect.void
                 : Effect.fail(e),
