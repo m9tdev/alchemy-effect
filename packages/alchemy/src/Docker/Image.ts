@@ -60,26 +60,25 @@ const ensureReference = Effect.fn(function* (props: ImageReferenceProps) {
 
   if (pull === "always") {
     yield* runDockerCommand(["pull", imageRef]);
-  } else if (pull === "missing") {
-    if (!existing) {
-      yield* runDockerCommand(["pull", imageRef]);
-    }
-  } else if (pull === "never") {
-    if (!existing) {
-      return yield* Effect.fail(
-        new Error(
-          `Docker.Image: image "${imageRef}" not present locally and pull="never"; refusing to pull`,
-        ),
-      );
-    }
-  }
-
-  const resolved = yield* inspect<InspectedImage>("image", imageRef);
-  if (!resolved) {
+  } else if (pull === "missing" && !existing) {
+    yield* runDockerCommand(["pull", imageRef]);
+  } else if (pull === "never" && !existing) {
     return yield* Effect.fail(
       new Error(
-        `Docker.Image: failed to resolve image id for "${imageRef}" after pull`,
+        `Docker.Image: pull="never" but image "${imageRef}" not present locally`,
       ),
+    );
+  }
+
+  // Reuse `existing` when we didn't pull; only re-inspect after a pull.
+  const resolved =
+    pull === "always" || (pull === "missing" && !existing)
+      ? yield* inspect<InspectedImage>("image", imageRef)
+      : existing;
+
+  if (!resolved) {
+    return yield* Effect.fail(
+      new Error(`Docker.Image: image "${imageRef}" not found after pull`),
     );
   }
 
@@ -113,11 +112,12 @@ export const ImageProvider = () =>
             if (news.image !== olds.image) {
               return { action: "replace" } as const;
             }
-            // pull strategy alone doesn't trigger replace; default update
-            // path is fine — but for Mode B there's nothing to actually
-            // update on the local daemon (the imageId only changes when
-            // image ref changes, which already replaces). Returning
-            // undefined lets the engine decide.
+            // pull: "always" honors the moving tag — re-run create on every
+            // diff so imageId refreshes if the registry pushed a new digest
+            // under this tag.
+            if ((news.pull ?? "missing") === "always") {
+              return { action: "update" } as const;
+            }
             return undefined;
           }
 
@@ -137,9 +137,20 @@ export const ImageProvider = () =>
             new Error("Docker.Image: Mode A (build) not yet implemented"),
           );
         }),
-        update: Effect.fn(function* () {
-          return yield* Effect.die(
-            "Docker.Image has no in-place update path; diff returns replace for any meaningful change",
+        update: Effect.fn(function* ({ news }) {
+          if (!news) {
+            return yield* Effect.fail(
+              new Error("Docker.Image: update called with undefined news"),
+            );
+          }
+          if (isReferenceProps(news)) {
+            return yield* ensureReference(news);
+          }
+          // Mode A update — Phase 5 fills in.
+          return yield* Effect.fail(
+            new Error(
+              "Docker.Image: build mode (Mode A) update not yet implemented",
+            ),
           );
         }),
         delete: Effect.fn(function* () {
