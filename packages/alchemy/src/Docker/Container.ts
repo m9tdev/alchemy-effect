@@ -387,14 +387,16 @@ const ensureContainer = Effect.fnUntraced(function* ({
 
   const existing = yield* inspect<InspectedContainer>("container", name);
   if (existing) {
-    // Re-use if labels match our project; this also covers idempotent retries.
+    // Adopt only if it's actually running with our labels and image — a
+    // `Created`/`exited`/`dead` container left over from a failed previous
+    // attempt must be removed and recreated, not adopted.
     if (
       existing.Config.Labels?.["alchemy.id"] === id &&
-      existing.Config.Image === imageRef
+      existing.Config.Image === imageRef &&
+      existing.State.Running
     ) {
       return yield* hydrateOutput(existing, network);
     }
-    // Stale container with same name from a previous deploy — remove first.
     yield* runDockerCommand(["rm", "-f", existing.Id]);
   }
 
@@ -426,16 +428,18 @@ export const ContainerProvider = () =>
           if (!isResolved(news)) return undefined;
           const oldName = yield* computeName(id, olds);
           const newName = yield* computeName(id, news);
-          if (oldName !== newName) return { action: "replace" } as const;
+          if (oldName !== newName) {
+            return { action: "replace", deleteFirst: true } as const;
+          }
           // image, network, ports, env, volumes, command, entrypoint,
           // healthcheck, user, workingDir, labels all replace.
           // `labels` and `env` are key-order-insensitive: compare via
           // recordKey so reordering keys in source doesn't trigger replace.
           if (recordKey(news.labels) !== recordKey(olds.labels)) {
-            return { action: "replace" } as const;
+            return { action: "replace", deleteFirst: true } as const;
           }
           if (recordKey(news.env) !== recordKey(olds.env)) {
-            return { action: "replace" } as const;
+            return { action: "replace", deleteFirst: true } as const;
           }
           const replaceKeys = [
             "image",
@@ -457,7 +461,7 @@ export const ContainerProvider = () =>
                 (news as Record<string, unknown>)[k] ?? null,
               )
             ) {
-              return { action: "replace" } as const;
+              return { action: "replace", deleteFirst: true } as const;
             }
           }
           // restart can update in place.
