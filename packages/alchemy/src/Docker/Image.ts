@@ -5,7 +5,6 @@ import * as Bundle from "../Bundle/Bundle.ts";
 import {
   buildAppDockerfile,
   dockerBuild,
-  dockerLogin,
   materializeDockerfile,
   pushImage,
   runDockerCommand,
@@ -197,14 +196,19 @@ const bundleAppImage = Effect.fnUntraced(function* ({
 
     // 6. Optional registry push.
     if (props.registry) {
-      yield* dockerLogin({
-        username: (props.registry.username ?? "") as string,
-        password: (props.registry.password ?? "") as string,
-        server: props.registry.url as string,
-      });
-      const pushed = `${props.registry.url}/${imageRef}`;
+      const username = props.registry.username as string | undefined;
+      const password = props.registry.password as string | undefined;
+      if (!username || !password) {
+        return yield* Effect.fail(
+          new Error(
+            `Docker.Image: registry push requires both username and password (id="${id}")`,
+          ),
+        );
+      }
+      const server = props.registry.url as string;
+      const pushed = `${server}/${imageRef}`;
       yield* runDockerCommand(["tag", imageRef, pushed]);
-      yield* pushImage(pushed);
+      yield* pushImage(pushed, { username, password, server });
     }
 
     // 7. Inspect for image id.
