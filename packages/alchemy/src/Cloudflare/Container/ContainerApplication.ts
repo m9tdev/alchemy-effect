@@ -8,6 +8,7 @@ import { AdoptPolicy } from "../../AdoptPolicy.ts";
 import { AlchemyContext } from "../../AlchemyContext.ts";
 import * as Bundle from "../../Bundle/Bundle.ts";
 import {
+  buildAppDockerfile,
   dockerBuild,
   materializeDockerfile,
   pushImage,
@@ -614,31 +615,14 @@ await Effect.runPromise(serverEffect).catch((err) => {
         runtime: "bun" | "node",
         external: string[] = [],
         autoInstallExternals = true,
-      ): string => {
-        const base =
-          userDockerfile?.trim() ??
-          (runtime === "bun" ? "FROM oven/bun:1" : "FROM node:22-slim");
-        const runtimeBin = runtime === "bun" ? "bun" : "node";
-        const installCmd = runtime === "bun" ? "bun add" : "npm install";
-        const installStep =
-          autoInstallExternals && external.length > 0
-            ? `RUN ${installCmd} ${external.join(" ")}`
-            : "";
-        return [
-          base,
-          "",
-          "WORKDIR /app",
-          ...(installStep ? [installStep, ""] : []),
-          "COPY index.mjs /app/index.mjs",
-          // Copy any additional rolldown chunks (`chunk-XXX.js`,
-          // `BunServices-YYY.js`, …). The glob matches zero or more files;
-          // non-trivial bundles always emit at least one chunk, minimal
-          // bundles emit none and the COPY no-ops.
-          "COPY *.js /app/",
-          `ENTRYPOINT ["${runtimeBin}", "/app/index.mjs"]`,
-          "",
-        ].join("\n");
-      };
+      ): string =>
+        buildAppDockerfile({
+          runtime,
+          external,
+          autoInstallExternals,
+          base: userDockerfile,
+          entryFile: "index.mjs",
+        });
 
       const buildAndPushImage = Effect.fnUntraced(function* (
         id: string,
