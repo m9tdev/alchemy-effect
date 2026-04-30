@@ -43,4 +43,54 @@ describe.skipIf(!dockerDaemonOk)("Docker.Volume", () => {
       expect(Result.isFailure(probe)).toBe(true);
     }).pipe(Effect.provide(Docker.providers())),
   );
+
+  test(
+    "re-deploying with the same name adopts the existing volume",
+    { providers: false },
+    Effect.gen(function* () {
+      yield* destroy();
+      const a = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Volume("data", {
+            name: "alchemy-test-data-adopt",
+          });
+        }),
+      );
+      const b = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Volume("data", {
+            name: "alchemy-test-data-adopt",
+          });
+        }),
+      );
+      expect(b.volumeName).toBe(a.volumeName);
+      expect(b.mountpoint).toBe(a.mountpoint);
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
+
+  test(
+    "changing the explicit name triggers replace",
+    { providers: false },
+    Effect.gen(function* () {
+      yield* destroy();
+      const a = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Volume("data", {
+            name: "alchemy-test-data-rename-a",
+          });
+        }),
+      );
+      const b = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Volume("data", {
+            name: "alchemy-test-data-rename-b",
+          });
+        }),
+      );
+      expect(a.volumeName).toBe("alchemy-test-data-rename-a");
+      expect(b.volumeName).toBe("alchemy-test-data-rename-b");
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
 });
