@@ -1,0 +1,45 @@
+import { runDockerCommand } from "@/Bundle/Docker";
+import * as Docker from "@/Docker";
+import { destroy, test } from "@/Test/Vitest";
+import { describe, expect } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { spawnSync } from "node:child_process";
+
+const dockerDaemonOk =
+  spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
+
+describe.skipIf(!dockerDaemonOk)("Docker.Network", () => {
+  test(
+    "creates and deletes a bridge network",
+    { providers: false },
+    Effect.gen(function* () {
+      yield* destroy();
+
+      const network = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Network("net", {});
+        }),
+      );
+
+      expect(network.networkName).toMatch(/net/);
+      expect(network.driver).toBe("bridge");
+
+      const { stdout } = yield* runDockerCommand([
+        "network",
+        "inspect",
+        network.networkId,
+        "--format",
+        "{{.Name}}",
+      ]);
+      expect(stdout.trim()).toBe(network.networkName);
+
+      yield* destroy();
+
+      const probe = yield* Effect.result(
+        runDockerCommand(["network", "inspect", network.networkId]),
+      );
+      expect(Result.isFailure(probe)).toBe(true);
+    }).pipe(Effect.provide(Docker.providers())),
+  );
+});
