@@ -211,3 +211,53 @@ export const pushImage = Effect.fn(function* (
   }
   yield* runDockerCommand(["push", imageRef]);
 });
+
+export interface BuildAppDockerfileOptions {
+  readonly runtime: "bun" | "node";
+  /** External packages installed in the image at build time. */
+  readonly external?: ReadonlyArray<string>;
+  /** When false, do NOT emit a `RUN bun add` / `npm install` step. */
+  readonly autoInstallExternals?: boolean;
+  /** Custom base Dockerfile snippet. Bundle COPY + ENTRYPOINT lines are appended. */
+  readonly base?: string;
+  /** Bundle entry filename inside the build context. @default "index.mjs" */
+  readonly entryFile?: string;
+}
+
+/**
+ * Build the standard app Dockerfile used by all alchemy bundle-and-run providers
+ * (Cloudflare Container, AWS ECS Task, Docker Image).
+ *
+ * The synthesized file installs `external` packages, copies the bundled output,
+ * and sets a runtime ENTRYPOINT. `base` defaults to `oven/bun:1` for Bun
+ * and `node:22-slim` for Node.
+ */
+export const buildAppDockerfile = (
+  options: BuildAppDockerfileOptions,
+): string => {
+  const {
+    runtime,
+    external = [],
+    autoInstallExternals = true,
+    entryFile = "index.mjs",
+  } = options;
+  const base =
+    options.base?.trim() ??
+    (runtime === "bun" ? "FROM oven/bun:1" : "FROM node:22-slim");
+  const runtimeBin = runtime === "bun" ? "bun" : "node";
+  const installCmd = runtime === "bun" ? "bun add" : "npm install";
+  const installStep =
+    autoInstallExternals && external.length > 0
+      ? `RUN ${installCmd} ${external.join(" ")}`
+      : "";
+  return [
+    base,
+    "",
+    "WORKDIR /app",
+    ...(installStep ? [installStep, ""] : []),
+    `COPY ${entryFile} /app/${entryFile}`,
+    "COPY *.js /app/",
+    `ENTRYPOINT ["${runtimeBin}", "/app/${entryFile}"]`,
+    "",
+  ].join("\n");
+};
