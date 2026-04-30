@@ -12,7 +12,7 @@ import { inspect, type InspectedContainer } from "./Inspect.ts";
 import { dockerLabels } from "./Labels.ts";
 import type { Network } from "./Network.ts";
 import type { Providers } from "./Providers.ts";
-import { isStderrMatch } from "./util.ts";
+import { isStderrMatch, recordKey } from "./util.ts";
 import type { Volume } from "./Volume.ts";
 
 export type PortMapping = {
@@ -89,7 +89,8 @@ const computeName = (id: string, props: ContainerProps) =>
     });
   });
 
-const buildRunArgs = ({
+/** @internal Exported for unit testing only. */
+export const buildRunArgs = ({
   name,
   imageRef,
   networkName,
@@ -143,24 +144,37 @@ const buildRunArgs = ({
     // Remaining entrypoint args go after the image; pre-pended to command below.
   }
   if (props.healthcheck) {
-    args.push("--health-cmd", props.healthcheck.test.join(" "));
-    if (props.healthcheck.interval)
-      args.push(
-        "--health-interval",
-        `${Duration.toMillis(props.healthcheck.interval)}ms`,
-      );
-    if (props.healthcheck.timeout)
-      args.push(
-        "--health-timeout",
-        `${Duration.toMillis(props.healthcheck.timeout)}ms`,
-      );
-    if (props.healthcheck.retries !== undefined)
-      args.push("--health-retries", String(props.healthcheck.retries));
-    if (props.healthcheck.startPeriod)
-      args.push(
-        "--health-start-period",
-        `${Duration.toMillis(props.healthcheck.startPeriod)}ms`,
-      );
+    const test = props.healthcheck.test;
+    if (test[0] === "NONE") {
+      // Docker sentinel meaning "no healthcheck" — disable rather than emit
+      // a literal "NONE" command. Skip the rest of the healthcheck flags.
+      args.push("--no-healthcheck");
+    } else {
+      // The CLI's --health-cmd is always a shell command (CMD-SHELL semantics),
+      // so strip the Docker disambiguation sentinel before joining.
+      const cmd =
+        test[0] === "CMD" || test[0] === "CMD-SHELL"
+          ? test.slice(1).join(" ")
+          : test.join(" ");
+      args.push("--health-cmd", cmd);
+      if (props.healthcheck.interval)
+        args.push(
+          "--health-interval",
+          `${Duration.toMillis(props.healthcheck.interval)}ms`,
+        );
+      if (props.healthcheck.timeout)
+        args.push(
+          "--health-timeout",
+          `${Duration.toMillis(props.healthcheck.timeout)}ms`,
+        );
+      if (props.healthcheck.retries !== undefined)
+        args.push("--health-retries", String(props.healthcheck.retries));
+      if (props.healthcheck.startPeriod)
+        args.push(
+          "--health-start-period",
+          `${Duration.toMillis(props.healthcheck.startPeriod)}ms`,
+        );
+    }
   }
   args.push(imageRef);
   if (props.entrypoint && props.entrypoint.length > 1) {
@@ -290,18 +304,24 @@ export const ContainerProvider = () =>
           if (oldName !== newName) return { action: "replace" } as const;
           // image, network, ports, env, volumes, command, entrypoint,
           // healthcheck, user, workingDir, labels all replace.
+          // `labels` and `env` are key-order-insensitive: compare via
+          // recordKey so reordering keys in source doesn't trigger replace.
+          if (recordKey(news.labels) !== recordKey(olds.labels)) {
+            return { action: "replace" } as const;
+          }
+          if (recordKey(news.env) !== recordKey(olds.env)) {
+            return { action: "replace" } as const;
+          }
           const replaceKeys = [
             "image",
             "network",
             "ports",
-            "env",
             "volumes",
             "command",
             "entrypoint",
             "healthcheck",
             "user",
             "workingDir",
-            "labels",
           ] as const;
           for (const k of replaceKeys) {
             if (
@@ -326,6 +346,10 @@ export const ContainerProvider = () =>
             (news.restart ?? "unless-stopped") !==
             (olds.restart ?? "unless-stopped")
           ) {
+            // Note: `docker container update --restart` only changes the
+            // policy applied on the next daemon-managed restart; it does NOT
+            // restart a running container. Do not "fix" this by adding a
+            // `docker restart` call — that would terminate the user's process.
             yield* runDockerCommand([
               "container",
               "update",
