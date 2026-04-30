@@ -18,11 +18,11 @@ describe.skipIf(!dockerDaemonOk)("Docker.Network", () => {
 
       const network = yield* test.deploy(
         Effect.gen(function* () {
-          return yield* Docker.Network("net", {});
+          return yield* Docker.Network("net", { name: "alchemy-test-net" });
         }),
       );
 
-      expect(network.networkName).toMatch(/net/);
+      expect(network.networkName).toBe("alchemy-test-net");
       expect(network.driver).toBe("bridge");
 
       const { stdout } = yield* runDockerCommand([

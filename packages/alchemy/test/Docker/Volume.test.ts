@@ -18,11 +18,11 @@ describe.skipIf(!dockerDaemonOk)("Docker.Volume", () => {
 
       const volume = yield* test.deploy(
         Effect.gen(function* () {
-          return yield* Docker.Volume("data", {});
+          return yield* Docker.Volume("data", { name: "alchemy-test-data" });
         }),
       );
 
-      expect(volume.volumeName).toMatch(/volume/);
+      expect(volume.volumeName).toBe("alchemy-test-data");
       expect(volume.driver).toBe("local");
       expect(volume.mountpoint).toContain(volume.volumeName);
 
