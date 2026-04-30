@@ -5,10 +5,11 @@ import type { Input } from "../Input.ts";
 import { createPhysicalName } from "../PhysicalName.ts";
 import * as Provider from "../Provider.ts";
 import { Resource } from "../Resource.ts";
-import { DockerCommandError, runDockerCommand } from "../Bundle/Docker.ts";
+import { runDockerCommand } from "../Bundle/Docker.ts";
 import { inspect, type InspectedVolume } from "./Inspect.ts";
 import { dockerLabels } from "./Labels.ts";
 import type { Providers } from "./Providers.ts";
+import { assertAlchemyOwned, isStderrMatch, recordKey } from "./util.ts";
 
 export interface VolumeProps {
   readonly name?: string;
@@ -42,21 +43,8 @@ const computeName = (id: string, props: VolumeProps) =>
     });
   });
 
-const isStderrMatch = (e: DockerCommandError, pattern: RegExp): boolean =>
-  pattern.test(e.stderr);
-
 const NO_SUCH_VOLUME = /no such volume/i;
 const VOLUME_IN_USE = /volume is in use/i;
-
-/**
- * Stable-stringify an order-insensitive string map so the diff is stable
- * across deploys (used for both `labels` and `driverOpts`).
- */
-const labelsKey = (l?: Record<string, Input<string>>) =>
-  Object.entries(l ?? {})
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join(",");
 
 export const VolumeProvider = () =>
   Provider.effect(
@@ -72,10 +60,10 @@ export const VolumeProvider = () =>
           if ((olds.driver ?? "local") !== (news.driver ?? "local")) {
             return { action: "replace" } as const;
           }
-          if (labelsKey(olds.driverOpts) !== labelsKey(news.driverOpts)) {
+          if (recordKey(olds.driverOpts) !== recordKey(news.driverOpts)) {
             return { action: "replace" } as const;
           }
-          if (labelsKey(olds.labels) !== labelsKey(news.labels)) {
+          if (recordKey(olds.labels) !== recordKey(news.labels)) {
             return { action: "replace" } as const;
           }
           return undefined;
@@ -83,7 +71,6 @@ export const VolumeProvider = () =>
         create: Effect.fn(function* ({ id, news = {} }) {
           const name = yield* computeName(id, news);
           const driver = news.driver ?? "local";
-          const expectedLabels = yield* dockerLabels(id);
 
           // Idempotent create: if a volume with this name already exists
           // (e.g. partial state-persistence failure on a previous run),
@@ -92,18 +79,12 @@ export const VolumeProvider = () =>
           // volume on `destroy()`.
           const existing = yield* inspect<InspectedVolume>("volume", name);
           if (existing) {
-            const ours =
-              existing.Labels?.["alchemy.app"] ===
-                expectedLabels["alchemy.app"] &&
-              existing.Labels?.["alchemy.stage"] ===
-                expectedLabels["alchemy.stage"];
-            if (!ours) {
-              return yield* Effect.fail(
-                new Error(
-                  `Docker.Volume: volume "${name}" already exists but is not owned by this alchemy stack/stage; refusing to adopt`,
-                ),
-              );
-            }
+            yield* assertAlchemyOwned({
+              id,
+              kind: "Volume",
+              name,
+              existingLabels: existing.Labels,
+            });
             return {
               volumeName: existing.Name,
               driver: existing.Driver,
@@ -112,6 +93,7 @@ export const VolumeProvider = () =>
             };
           }
 
+          const expectedLabels = yield* dockerLabels(id);
           const labels = { ...expectedLabels, ...(news.labels ?? {}) };
 
           const args: string[] = ["volume", "create", "--driver", driver];

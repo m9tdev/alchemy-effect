@@ -5,10 +5,11 @@ import type { Input } from "../Input.ts";
 import { createPhysicalName } from "../PhysicalName.ts";
 import * as Provider from "../Provider.ts";
 import { Resource } from "../Resource.ts";
-import { DockerCommandError, runDockerCommand } from "../Bundle/Docker.ts";
+import { runDockerCommand } from "../Bundle/Docker.ts";
 import { inspect, type InspectedNetwork } from "./Inspect.ts";
 import { dockerLabels } from "./Labels.ts";
 import type { Providers } from "./Providers.ts";
+import { assertAlchemyOwned, isStderrMatch, recordKey } from "./util.ts";
 
 export interface NetworkProps {
   readonly name?: string;
@@ -43,20 +44,8 @@ const computeName = (id: string, props: NetworkProps) =>
     });
   });
 
-const isStderrMatch = (e: DockerCommandError, pattern: RegExp): boolean =>
-  pattern.test(e.stderr);
-
 const NO_SUCH_NETWORK = /no such network/i;
 const HAS_ACTIVE_ENDPOINTS = /has active endpoints/i;
-
-/**
- * Stable-stringify labels so the diff is order-insensitive across deploys.
- */
-const labelsKey = (l?: Record<string, Input<string>>) =>
-  Object.entries(l ?? {})
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join(",");
 
 export const NetworkProvider = () =>
   Provider.effect(
@@ -78,7 +67,7 @@ export const NetworkProvider = () =>
           if ((olds.attachable ?? true) !== (news.attachable ?? true)) {
             return { action: "replace" } as const;
           }
-          if (labelsKey(olds.labels) !== labelsKey(news.labels)) {
+          if (recordKey(olds.labels) !== recordKey(news.labels)) {
             return { action: "replace" } as const;
           }
           return undefined;
@@ -86,7 +75,6 @@ export const NetworkProvider = () =>
         create: Effect.fn(function* ({ id, news = {} }) {
           const name = yield* computeName(id, news);
           const driver = news.driver ?? "bridge";
-          const expectedLabels = yield* dockerLabels(id);
 
           // Idempotent create: if a network with this name already exists
           // (e.g. partial state-persistence failure on a previous run),
@@ -95,18 +83,12 @@ export const NetworkProvider = () =>
           // network on `destroy()`.
           const existing = yield* inspect<InspectedNetwork>("network", name);
           if (existing) {
-            const ours =
-              existing.Labels?.["alchemy.app"] ===
-                expectedLabels["alchemy.app"] &&
-              existing.Labels?.["alchemy.stage"] ===
-                expectedLabels["alchemy.stage"];
-            if (!ours) {
-              return yield* Effect.fail(
-                new Error(
-                  `Docker.Network: network "${name}" already exists but is not owned by this alchemy stack/stage; refusing to adopt`,
-                ),
-              );
-            }
+            yield* assertAlchemyOwned({
+              id,
+              kind: "Network",
+              name,
+              existingLabels: existing.Labels,
+            });
             return {
               networkId: existing.Id,
               networkName: existing.Name,
@@ -115,6 +97,7 @@ export const NetworkProvider = () =>
             };
           }
 
+          const expectedLabels = yield* dockerLabels(id);
           const labels = { ...expectedLabels, ...(news.labels ?? {}) };
 
           const args: string[] = ["network", "create", "--driver", driver];
