@@ -41,6 +41,15 @@ export interface InspectedVolume {
   Options: Record<string, string> | null;
 }
 
+export interface InspectedImage {
+  Id: string;
+  RepoTags: string[] | null;
+  RepoDigests: string[] | null;
+  Size: number;
+  Architecture: string;
+  Os: string;
+}
+
 export interface InspectedContainer {
   Id: string;
   Name: string;
