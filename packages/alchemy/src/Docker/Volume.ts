@@ -74,7 +74,11 @@ export const VolumeProvider = () =>
 
           // Idempotent create: if a volume with this name already exists
           // (e.g. partial state-persistence failure on a previous run),
-          // adopt it — but only if it carries our alchemy ownership labels.
+          // adopt it — but only if it carries our alchemy ownership labels
+          // AND the existing driverOpts match. driverOpts are immutable after
+          // `docker volume create`, so a mismatch indicates the previous run
+          // was attempting different mount options; refuse adoption rather
+          // than silently using a volume with the wrong configuration.
           // Otherwise refuse, so we never silently destroy a user-managed
           // volume on `destroy()`.
           const existing = yield* inspect<InspectedVolume>("volume", name);
@@ -85,6 +89,15 @@ export const VolumeProvider = () =>
               name,
               existingLabels: existing.Labels,
             });
+            const existingOpts = recordKey(existing.Options ?? {});
+            const expectedOpts = recordKey(news.driverOpts);
+            if (existingOpts !== expectedOpts) {
+              return yield* Effect.fail(
+                new Error(
+                  `Docker.Volume: "${name}" already exists with mismatched driverOpts (existing: ${existingOpts || "<none>"}, desired: ${expectedOpts || "<none>"}); refusing to adopt`,
+                ),
+              );
+            }
             return {
               volumeName: existing.Name,
               driver: existing.Driver,
