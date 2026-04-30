@@ -59,24 +59,21 @@ export const NetworkProvider = () =>
         stables: ["networkId", "networkName", "driver", "scope"],
         diff: Effect.fn(function* ({ id, news, olds = {} }) {
           if (!isResolved(news)) return undefined;
-          const newsResolved = news as NetworkProps;
           const oldName = yield* computeName(id, olds);
-          const newName = yield* computeName(id, newsResolved);
+          const newName = yield* computeName(id, news);
           if (oldName !== newName) return { action: "replace" } as const;
-          if ((olds.driver ?? "bridge") !== (newsResolved.driver ?? "bridge")) {
+          if ((olds.driver ?? "bridge") !== (news.driver ?? "bridge")) {
             return { action: "replace" } as const;
           }
-          if ((olds.internal ?? false) !== (newsResolved.internal ?? false)) {
+          if ((olds.internal ?? false) !== (news.internal ?? false)) {
             return { action: "replace" } as const;
           }
-          if (
-            (olds.attachable ?? true) !== (newsResolved.attachable ?? true)
-          ) {
+          if ((olds.attachable ?? true) !== (news.attachable ?? true)) {
             return { action: "replace" } as const;
           }
           if (
             JSON.stringify(olds.labels ?? {}) !==
-            JSON.stringify(newsResolved.labels ?? {})
+            JSON.stringify(news.labels ?? {})
           ) {
             return { action: "replace" } as const;
           }

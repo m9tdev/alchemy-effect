@@ -42,4 +42,39 @@ describe.skipIf(!dockerDaemonOk)("Docker.Network", () => {
       expect(Result.isFailure(probe)).toBe(true);
     }).pipe(Effect.provide(Docker.providers())),
   );
+
+  test(
+    "re-deploying with the same name is a no-op",
+    { providers: false },
+    Effect.gen(function* () {
+      yield* destroy();
+      const a = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Network("net", {});
+        }),
+      );
+      const b = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Network("net", {});
+        }),
+      );
+      expect(b.networkId).toBe(a.networkId);
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
+
+  test(
+    "changing driver triggers replace",
+    { providers: false },
+    Effect.gen(function* () {
+      yield* destroy();
+      const a = yield* test.deploy(
+        Effect.gen(function* () {
+          return yield* Docker.Network("net", { driver: "bridge" });
+        }),
+      );
+      expect(a.driver).toBe("bridge");
+      yield* destroy();
+    }).pipe(Effect.provide(Docker.providers())),
+  );
 });
