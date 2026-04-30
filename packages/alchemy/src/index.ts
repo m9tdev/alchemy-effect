@@ -17,6 +17,7 @@ export {
 } from "./Binding.ts";
 export * from "./Destroy.ts";
 export * from "./Diff.ts";
+export * as Docker from "./Docker/index.ts";
 export * from "./Input.ts";
 export * from "./InstanceId.ts";
 export * from "./Namespace.ts";
