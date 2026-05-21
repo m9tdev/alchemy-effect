@@ -6,7 +6,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import { DockerConfigPath, resolveAuth } from "../../src/Docker/Auth.ts";
+import { delimiter as PATH_DELIMITER } from "node:path";
+import {
+  DockerConfigPath,
+  DockerCredentialHelperPath,
+  resolveAuth,
+} from "../../src/Docker/Auth.ts";
 
 const FsAndPath = Layer.mergeAll(BunFileSystem.layer, BunPath.layer);
 const PlatformLayer = Layer.mergeAll(
@@ -14,13 +19,20 @@ const PlatformLayer = Layer.mergeAll(
   BunChildProcessSpawner.layer.pipe(Layer.provide(FsAndPath)),
 );
 
+const SYSTEM_PATH = process.env.PATH ?? "";
+const helperSearchPath = (dir: string) =>
+  `${dir}${PATH_DELIMITER}${SYSTEM_PATH}`;
+
 describe("resolveAuth", () => {
   it.effect("returns explicit credentials when provided", () =>
     Effect.gen(function* () {
       const result = yield* resolveAuth("ghcr.io", {
         username: "explicit-user",
         password: "explicit-pass",
-      }).pipe(Effect.provideService(DockerConfigPath, "/nonexistent"));
+      }).pipe(
+        Effect.provideService(DockerConfigPath, "/nonexistent"),
+        Effect.provideService(DockerCredentialHelperPath, ""),
+      );
       expect(result).toEqual({
         username: "explicit-user",
         password: "explicit-pass",
@@ -46,6 +58,7 @@ describe("resolveAuth", () => {
         );
         const result = yield* resolveAuth("ghcr.io", undefined).pipe(
           Effect.provideService(DockerConfigPath, configPath),
+          Effect.provideService(DockerCredentialHelperPath, ""),
         );
         expect(result).toEqual({
           username: "ghcr_user",
@@ -82,20 +95,18 @@ describe("resolveAuth", () => {
           JSON.stringify({ credsStore: "alchemy-test" }),
         );
 
-        const originalPath = process.env.PATH ?? "";
-        process.env.PATH = `${dir}:${originalPath}`;
-        try {
-          const result = yield* resolveAuth("ghcr.io", undefined).pipe(
-            Effect.provideService(DockerConfigPath, configPath),
-          );
-          expect(result).toEqual({
-            username: "mock-user",
-            password: "mock-secret",
-            serveraddress: "ghcr.io",
-          });
-        } finally {
-          process.env.PATH = originalPath;
-        }
+        const result = yield* resolveAuth("ghcr.io", undefined).pipe(
+          Effect.provideService(DockerConfigPath, configPath),
+          Effect.provideService(
+            DockerCredentialHelperPath,
+            helperSearchPath(dir),
+          ),
+        );
+        expect(result).toEqual({
+          username: "mock-user",
+          password: "mock-secret",
+          serveraddress: "ghcr.io",
+        });
       } finally {
         yield* fs
           .remove(dir, { recursive: true })
@@ -129,16 +140,14 @@ describe("resolveAuth", () => {
           }),
         );
 
-        const originalPath = process.env.PATH ?? "";
-        process.env.PATH = `${dir}:${originalPath}`;
-        try {
-          const result = yield* resolveAuth("ghcr.io", undefined).pipe(
-            Effect.provideService(DockerConfigPath, configPath),
-          );
-          expect(result?.username).toBe("mock-user");
-        } finally {
-          process.env.PATH = originalPath;
-        }
+        const result = yield* resolveAuth("ghcr.io", undefined).pipe(
+          Effect.provideService(DockerConfigPath, configPath),
+          Effect.provideService(
+            DockerCredentialHelperPath,
+            helperSearchPath(dir),
+          ),
+        );
+        expect(result?.username).toBe("mock-user");
       } finally {
         yield* fs
           .remove(dir, { recursive: true })

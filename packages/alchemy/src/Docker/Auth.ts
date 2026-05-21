@@ -43,6 +43,14 @@ export const DockerConfigPathLive: Layer.Layer<
   }),
 );
 
+export class DockerCredentialHelperPath extends Context.Service<
+  DockerCredentialHelperPath,
+  string
+>()("alchemy/Docker.CredentialHelperPath") {}
+
+export const DockerCredentialHelperPathLive: Layer.Layer<DockerCredentialHelperPath> =
+  Layer.succeed(DockerCredentialHelperPath, process.env.PATH ?? "");
+
 interface DockerConfig {
   readonly auths?: Record<string, { auth?: string; identitytoken?: string }>;
   readonly credsStore?: string;
@@ -110,11 +118,14 @@ const runCredentialHelper = (
 ): Effect.Effect<
   RegistryAuth | undefined,
   AuthResolveError,
-  ChildProcessSpawner.ChildProcessSpawner
+  ChildProcessSpawner.ChildProcessSpawner | DockerCredentialHelperPath
 > =>
   Effect.gen(function* () {
+    const helperPath = yield* DockerCredentialHelperPath;
     const cmd = ChildProcess.make(`docker-credential-${helperName}`, ["get"], {
       stdin: Stream.succeed(new TextEncoder().encode(registry)),
+      env: { PATH: helperPath },
+      extendEnv: true,
     });
     const { stdout, exitCode } = yield* exec(cmd).pipe(
       Effect.scoped,
@@ -159,6 +170,7 @@ export const resolveAuth = (
   | FileSystem.FileSystem
   | DockerConfigPath
   | ChildProcessSpawner.ChildProcessSpawner
+  | DockerCredentialHelperPath
 > =>
   Effect.gen(function* () {
     if (explicit?.username && explicit?.password) {
