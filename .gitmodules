@@ -1,3 +1,7 @@
 [submodule "vendor/alchemy"]
 	path = .vendor/alchemy
 	url = git@github.com:alchemy-run/alchemy.git
+[submodule ".vendor/distilled"]
+	path = .vendor/distilled
+	url = git@github.com:m9tdev/distilled.git
+	branch = docker-sdk
