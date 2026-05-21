@@ -4,6 +4,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { exec } from "../Util/exec.ts";
 
 export interface RegistryAuth {
   readonly username: string;
@@ -101,13 +104,61 @@ const findAuthEntry = (
   return undefined;
 };
 
+const runCredentialHelper = (
+  helperName: string,
+  registry: string,
+): Effect.Effect<
+  RegistryAuth | undefined,
+  AuthResolveError,
+  ChildProcessSpawner.ChildProcessSpawner
+> =>
+  Effect.gen(function* () {
+    const cmd = ChildProcess.make(`docker-credential-${helperName}`, ["get"], {
+      stdin: Stream.succeed(new TextEncoder().encode(registry)),
+    });
+    const { stdout, exitCode } = yield* exec(cmd).pipe(
+      Effect.scoped,
+      Effect.mapError(
+        (cause) =>
+          new AuthResolveError({
+            registry,
+            reason: `Failed to invoke docker-credential-${helperName}`,
+            cause,
+          }),
+      ),
+    );
+    if (exitCode !== 0) return undefined;
+    const parsed = yield* Effect.try({
+      try: () =>
+        JSON.parse(stdout) as {
+          Username?: string;
+          Secret?: string;
+          ServerURL?: string;
+        },
+      catch: (cause) =>
+        new AuthResolveError({
+          registry,
+          reason: `docker-credential-${helperName} returned invalid JSON`,
+          cause,
+        }),
+    });
+    if (!parsed.Username || !parsed.Secret) return undefined;
+    return {
+      username: parsed.Username,
+      password: parsed.Secret,
+      serveraddress: parsed.ServerURL ?? registry,
+    };
+  });
+
 export const resolveAuth = (
   registry: string,
   explicit?: ResolveAuthExplicit,
 ): Effect.Effect<
   RegistryAuth | undefined,
   AuthResolveError,
-  FileSystem.FileSystem | DockerConfigPath
+  | FileSystem.FileSystem
+  | DockerConfigPath
+  | ChildProcessSpawner.ChildProcessSpawner
 > =>
   Effect.gen(function* () {
     if (explicit?.username && explicit?.password) {
@@ -133,5 +184,11 @@ export const resolveAuth = (
         }
       }
     }
+
+    const helperName = config.credHelpers?.[registry] ?? config.credsStore;
+    if (helperName) {
+      return yield* runCredentialHelper(helperName, registry);
+    }
+
     return undefined;
   });
