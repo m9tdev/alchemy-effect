@@ -1,3 +1,8 @@
+import { Credentials } from "@distilled.cloud/docker";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+
 export interface ParsedDockerHost {
   readonly host: string;
   readonly port: number;
@@ -52,3 +57,36 @@ export const parseDockerHost = (input: string): ParsedDockerHost => {
   const tls = scheme === "https" || port === TLS_PORT;
   return { host, port, tls };
 };
+
+/**
+ * Provides the Docker SDK's `Credentials` service, constructed from the
+ * `DOCKER_HOST` environment variable.
+ *
+ * Downstream code uses the SDK's operations directly:
+ *
+ * ```ts
+ * import { SystemPing } from "@distilled.cloud/docker";
+ *
+ * yield* SystemPing({}); // requires Credentials | HttpClient
+ * ```
+ *
+ * Provide both `DockerClientLive` and `FetchHttpClient.layer` to satisfy
+ * those requirements.
+ */
+export const DockerClientLive = Layer.effect(
+  Credentials,
+  Effect.gen(function* () {
+    const dockerHost = yield* Config.string("DOCKER_HOST").pipe(
+      Config.withDefault("tcp://localhost:2375"),
+    );
+    const parsed = parseDockerHost(dockerHost);
+    const scheme = parsed.tls ? "https" : "http";
+    return {
+      apiKey: "", // Docker Engine API doesn't use API keys
+      apiBaseUrl: `${scheme}://${parsed.host}:${parsed.port}`,
+    };
+  }),
+);
+
+// Re-export for convenience and for the test seam.
+export { Credentials as DockerCredentials };

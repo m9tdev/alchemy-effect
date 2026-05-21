@@ -1,5 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { parseDockerHost } from "../../src/Docker/Client.ts";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Effect from "effect/Effect";
+import {
+  DockerClientLive,
+  DockerCredentials,
+  parseDockerHost,
+} from "../../src/Docker/Client.ts";
 
 describe("parseDockerHost", () => {
   it("accepts tcp://host:port", () => {
@@ -49,4 +55,52 @@ describe("parseDockerHost", () => {
       tls: true,
     });
   });
+});
+
+const withDockerHost = (env: Record<string, string>) =>
+  ConfigProvider.layer(ConfigProvider.fromEnv({ env }));
+
+describe("DockerClientLive", () => {
+  it.effect("builds apiBaseUrl from tcp:// DOCKER_HOST (no TLS)", () =>
+    Effect.gen(function* () {
+      const creds = yield* DockerCredentials;
+      expect(creds.apiBaseUrl).toBe("http://localhost:2375");
+      expect(creds.apiKey).toBe("");
+    }).pipe(
+      Effect.provide(DockerClientLive),
+      Effect.provide(withDockerHost({ DOCKER_HOST: "tcp://localhost:2375" })),
+    ),
+  );
+
+  it.effect("builds apiBaseUrl from https:// DOCKER_HOST (TLS)", () =>
+    Effect.gen(function* () {
+      const creds = yield* DockerCredentials;
+      expect(creds.apiBaseUrl).toBe("https://docker.example.com:2376");
+    }).pipe(
+      Effect.provide(DockerClientLive),
+      Effect.provide(
+        withDockerHost({ DOCKER_HOST: "https://docker.example.com:2376" }),
+      ),
+    ),
+  );
+
+  it.effect("port 2376 implies https scheme", () =>
+    Effect.gen(function* () {
+      const creds = yield* DockerCredentials;
+      expect(creds.apiBaseUrl).toBe("https://localhost:2376");
+    }).pipe(
+      Effect.provide(DockerClientLive),
+      Effect.provide(withDockerHost({ DOCKER_HOST: "tcp://localhost:2376" })),
+    ),
+  );
+
+  it.effect("defaults to tcp://localhost:2375 when DOCKER_HOST is unset", () =>
+    Effect.gen(function* () {
+      const creds = yield* DockerCredentials;
+      expect(creds.apiBaseUrl).toBe("http://localhost:2375");
+    }).pipe(
+      Effect.provide(DockerClientLive),
+      Effect.provide(withDockerHost({})),
+    ),
+  );
 });
