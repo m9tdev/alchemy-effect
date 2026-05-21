@@ -62,7 +62,9 @@
       "packages/*",
       "examples/*",
       "examples/monorepo-single-stack/*",
-      "examples/monorepo-multi-stack/*"
+      "examples/monorepo-multi-stack/*",
+      ".vendor/distilled/packages/core",
+      ".vendor/distilled/packages/docker"
     ],
     "catalog": {
       "@alchemy.run/node-utils": "0.0.2",
@@ -77,6 +79,7 @@
       "@distilled.cloud/cloudflare-vite-plugin": "0.5.4",
       "@distilled.cloud/cloudflare": "^0.21.3",
       "@distilled.cloud/core": "^0.21.3",
+      "@distilled.cloud/docker": "workspace:*",
       "@distilled.cloud/neon": "^0.21.3",
       "@distilled.cloud/planetscale": "^0.21.3",
       "@effect/language-service": ">=4.0.0-beta.66 || >=4.0.0",
@@ -98,6 +101,7 @@
       "ai": "^6.0.62",
       "aws4fetch": "^1.0.20",
       "better-auth": "^1.6.2",
+      "dotenv": "^17.2.3",
       "drizzle-kit": ">=1.0.0-rc.1",
       "drizzle-orm": ">=1.0.0-rc.1",
       "effect": ">=4.0.0-beta.66 || >=4.0.0",
@@ -105,8 +109,10 @@
       "rolldown": "1.0.0-rc.17",
       "solid-js": "latest",
       "sonda": "^0.11.1",
+      "tar-stream": "^3.1.7",
       "typescript": "^6.0.3",
       "vite": "^8.0.7",
+      "vitest": "^4.0.18",
       "web-tree-sitter": "0.25.10",
       "ws": "^8.20.0",
       "yaml": "^2.0.0"
