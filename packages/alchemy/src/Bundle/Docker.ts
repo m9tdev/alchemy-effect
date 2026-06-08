@@ -2,6 +2,8 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { pack as tarPack } from "tar-stream";
+import { compileDockerIgnore } from "./DockerIgnore.ts";
 import * as Stream from "effect/Stream";
 import { ChildProcess } from "effect/unstable/process";
 import { exec } from "../Util/exec.ts";
@@ -264,3 +266,128 @@ export const buildAppDockerfile = (
     "",
   ].join("\n");
 };
+
+export class BuildContextError extends Data.TaggedError("BuildContextError")<{
+  readonly dir: string;
+  readonly reason: string;
+  readonly cause?: unknown;
+}> {}
+
+/**
+ * Walk `dir`, apply `.dockerignore` rules, pack into a tar archive.
+ * Always includes `Dockerfile` even when matched by .dockerignore (Docker's
+ * documented behavior — the Dockerfile is needed to drive the build).
+ */
+export const packBuildContext = Effect.fn(function* (dir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+
+  const ignoreText = yield* fs
+    .readFileString(path.join(dir, ".dockerignore"))
+    .pipe(Effect.catch(() => Effect.succeed("")));
+  const isIgnored = compileDockerIgnore(ignoreText);
+
+  const files: { rel: string; data: Uint8Array; mode: number }[] = [];
+  const walk = (
+    current: string,
+  ): Effect.Effect<
+    void,
+    BuildContextError,
+    FileSystem.FileSystem | Path.Path
+  > =>
+    Effect.gen(function* () {
+      const entries = yield* fs.readDirectory(current).pipe(
+        Effect.catch((cause) =>
+          Effect.fail(
+            new BuildContextError({
+              dir,
+              reason: `Cannot read directory ${current}`,
+              cause,
+            }),
+          ),
+        ),
+      );
+      for (const name of entries) {
+        const abs = path.join(current, name);
+        const rel = path.relative(dir, abs);
+        const stat = yield* fs
+          .stat(abs)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.fail(
+                new BuildContextError({
+                  dir,
+                  reason: `Cannot stat ${abs}`,
+                  cause,
+                }),
+              ),
+            ),
+          );
+        if (stat.type === "Directory") {
+          if (isIgnored(rel)) continue;
+          yield* walk(abs);
+        } else {
+          if (rel !== "Dockerfile" && isIgnored(rel)) continue;
+          const data = yield* fs.readFile(abs).pipe(
+            Effect.catch((cause) =>
+              Effect.fail(
+                new BuildContextError({
+                  dir,
+                  reason: `Cannot read ${abs}`,
+                  cause,
+                }),
+              ),
+            ),
+          );
+          const mode = Number(stat.mode) & 0o7777;
+          files.push({ rel, data, mode });
+        }
+      }
+    });
+
+  yield* walk(dir);
+
+  return yield* Effect.callback<Uint8Array, BuildContextError>((resume) => {
+    const packer = tarPack();
+    const chunks: Uint8Array[] = [];
+    packer.on("data", (c: Uint8Array) => chunks.push(c));
+    packer.on("end", () =>
+      resume(Effect.succeed(new Uint8Array(Buffer.concat(chunks)))),
+    );
+    packer.on("error", (cause) =>
+      resume(
+        Effect.fail(
+          new BuildContextError({ dir, reason: "tar-stream error", cause }),
+        ),
+      ),
+    );
+
+    const writeNext = (i: number): void => {
+      if (i >= files.length) {
+        packer.finalize();
+        return;
+      }
+      const { rel, data, mode } = files[i];
+      packer.entry(
+        { name: rel, size: data.length, mode },
+        Buffer.from(data),
+        (err) => {
+          if (err) {
+            resume(
+              Effect.fail(
+                new BuildContextError({
+                  dir,
+                  reason: "Failed to write tar entry",
+                  cause: err,
+                }),
+              ),
+            );
+          } else {
+            writeNext(i + 1);
+          }
+        },
+      );
+    };
+    writeNext(0);
+  });
+});
